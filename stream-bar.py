@@ -8,7 +8,17 @@ BAUD_RATE = 1000000
 
 VIDEO_WIDTH = 24
 VIDEO_HEIGHT = 33
-HEADER = bytes([0xFF, 0xFE])
+HEADER = bytes([0xFE, 0xFE, 0xFD])
+
+SETTINGS_HEADER = bytes([0xFE, 0xFE, 0xFC])
+
+import random
+
+def random_color():
+    return [random.randint(0, 255) for _ in range(3)]
+
+def random_brightness():
+    return random.randint(1, 127)
 
 
 def make_bar_frame(x):
@@ -40,6 +50,10 @@ def main():
     try:
         x = 0
         dx = 1
+        loop_count = 0
+        color0 = random_color()
+        color1 = random_color()
+        brightness = random_brightness()
         while True:
             frame = make_bar_frame(x)
             frame_bytes = frame.flatten()
@@ -54,6 +68,16 @@ def main():
             x += dx
             if x >= VIDEO_WIDTH - 1 or x <= 0:
                 dx *= -1
+                loop_count += 1
+                # After each full loop, send a new settings packet
+                color0 = random_color()
+                color1 = random_color()
+                brightness = random_brightness()
+                settings_payload = bytes(color0 + color1 + [brightness])
+                settings_checksum = sum(settings_payload) % 256
+                settings_packet = SETTINGS_HEADER + settings_payload + bytes([settings_checksum])
+                print(f"Sending settings packet: color0={color0}, color1={color1}, brightness={brightness}, checksum={settings_checksum:02X}")
+                ser.write(settings_packet)
             time.sleep(0.05)
     except KeyboardInterrupt:
         print("Exiting...")

@@ -1,6 +1,31 @@
 /*
-   FastLED Mapping Demo: https://github.com/jasoncoon/led-mapper
-   Copyright (C) 2022 Jason Coon, Evil Genius Labs LLC
+   Serial Control LED Display System
+   =================================
+
+   This Arduino sketch controls a WS2813 LED strip display (647 LEDs) using serial communication
+   from a Python script. It receives video frame data and settings packets, and continuously
+   reads distance data from a VL53L1X time-of-flight sensor.
+
+   Features:
+   - Receives 24x33 video frames via serial and maps them to LED coordinates
+   - Processes color and brightness settings in real-time
+   - Non-blocking VL53L1X distance sensor reading with automatic data transmission
+   - Supports two-color mapping (color0 and color1) with brightness control
+   - FastLED library integration for efficient LED control
+
+   Hardware Requirements:
+   - Xiao ESP32 or QTPy board
+   - WS2813 LED strip (647 LEDs)
+   - VL53L1X time-of-flight distance sensor
+   - I2C connections: SDA=D4, SCL=D5
+   - LED data pin: D3
+
+   Serial Protocol:
+   - Video frames: 0xFE 0xFE 0xFD + [792 bytes] + [checksum]
+   - Settings: 0xFE 0xFE 0xFC + [7 bytes] + [checksum]
+   - Distance data: Automatically sent as plain text when new readings available
+
+   Author: Nicholas Stedman, Devicist
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,17 +48,22 @@ FASTLED_USING_NAMESPACE
 #warning "Requires FastLED 3.1 or later; check github for latest code."
 #endif
 
-// change these to match your data pin, LED type, and color order
-#define DATA_PIN D3
-#define LED_TYPE WS2813
-#define COLOR_ORDER BRG
-#define DEFAULT_BRIGHTNESS 32
+// LED Configuration
+// =====================
+#define DATA_PIN D3           // LED data pin
+#define LED_TYPE WS2813       // LED strip type
+#define COLOR_ORDER BRG       // Color order for WS2813
+#define DEFAULT_BRIGHTNESS 32 // Default LED brightness (0-255)
 
-// start of data copied from LED Mapper:
-// https://jasoncoon.github.io/led-mapper/#
+// LED Mapping Configuration
+// ========================
+// The LED coordinates are mapped from a 24x33 video grid to 647 physical LEDs
+// This mapping data was generated using the LED Mapper tool:
+// https://jasoncoon.github.io/led-mapper/
 
 #define NUM_LEDS 647
 
+// X-coordinates for each LED (0-23 range)
 const byte coordsX[] = {
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -68,6 +98,7 @@ const byte coordsX[] = {
     22, 21, 20, 19, 18, 17, 16, 15, 10, 9, 8, 7, 6, 5, 4, 3, 2,
     21, 20, 19, 18, 17, 8, 7, 6, 5, 4};
 
+// Y-coordinates for each LED (0-32 range)
 const byte coordsY[] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -101,39 +132,67 @@ const byte coordsY[] = {
     19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
     18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18,
     17, 17, 17, 17, 17, 17, 17, 17, 17, 17};
-// end of data copied from LED Mapper
 
-CRGB leds[NUM_LEDS];
+// LED Array and Color Configuration
+// ===============================
+CRGB leds[NUM_LEDS]; // FastLED array for all LEDs
 
-// Define base colors for video mapping
-CRGB color0 = CRGB::Blue;
-CRGB color1 = CRGB::White;
+// Default colors for video mapping (can be changed via serial settings)
+CRGB color0 = CRGB::Blue;  // Primary color (used when high bit = 0)
+CRGB color1 = CRGB::White; // Secondary color (used when high bit = 1)
 
 #define VIDEO_WIDTH 24
 #define VIDEO_HEIGHT 33
-#define VIDEO_PIXELS (VIDEO_WIDTH * VIDEO_HEIGHT)
+#define VIDEO_PIXELS (VIDEO_WIDTH * VIDEO_HEIGHT) // 792 bytes per frame
+
+// Serial Communication Protocol
+// ============================
+// Packet headers for different message types
 #define HEADER_1 0xFE
 #define HEADER_2 0xFE
-#define FRAME_TYPE 0xFD
-#define SETTINGS_TYPE 0xFC
+#define FRAME_TYPE 0xFD    // Video frame data
+#define SETTINGS_TYPE 0xFC // Color/brightness settings
+
+// Packet sizes
 #define FRAME_SIZE (3 + VIDEO_PIXELS + 1) // header + payload + checksum
 #define SETTINGS_PAYLOAD_SIZE 7
-#define SETTINGS_PACKET_SIZE (3 + SETTINGS_PAYLOAD_SIZE + 1) // header + payload + checksum
+#define SETTINGS_PACKET_SIZE (3 + SETTINGS_PAYLOAD_SIZE + 1)
 
-// Unified packet receiver
+// Packet type enumeration for state machine
 #define PACKET_TYPE_NONE 0
 #define PACKET_TYPE_VIDEO 1
 #define PACKET_TYPE_SETTINGS 2
 
+// Global Variables
+// ================
 volatile byte receivedPacketType = PACKET_TYPE_NONE;
-static byte videoFrame[VIDEO_PIXELS];
-static byte settingsPacket[SETTINGS_PAYLOAD_SIZE];
+static byte videoFrame[VIDEO_PIXELS];              // Buffer for incoming video data
+static byte settingsPacket[SETTINGS_PAYLOAD_SIZE]; // Buffer for settings data
 
+// VL53L1X Distance Sensor Configuration
+// ====================================
 Melopero_VL53L1X sensor;
-int vl53l1x_distance = 0;
-bool vl53l1x_measurement_started = false;
-unsigned long vl53l1x_measurement_start_time = 0;
+int vl53l1x_distance = 0;                         // Current distance reading in mm
+bool vl53l1x_measurement_started = false;         // Track if measurement is active
+unsigned long vl53l1x_measurement_start_time = 0; // Timeout tracking
 
+/**
+ * Serial Packet Receiver - State Machine
+ * =====================================
+ *
+ * This function implements a state machine to receive and parse serial packets
+ * from the Python control script. It handles three types of packets:
+ * - Video frames (792 bytes + checksum)
+ * - Settings packets (7 bytes + checksum)
+ *
+ * Packet Format:
+ * - Header: 0xFE 0xFE
+ * - Type: 0xFD (video), 0xFC (settings), 0xFB (distance request)
+ * - Payload: Variable length data
+ * - Checksum: Sum of all payload bytes modulo 256
+ *
+ * @return true if a complete packet was received and validated
+ */
 bool receivePacket()
 {
   static enum { WAIT_HEADER1,
@@ -234,7 +293,19 @@ bool receivePacket()
   return false;
 }
 
-// Map a flat video array to the LED array using coordsX and coordsY
+/**
+ * Video to LED Mapping Function
+ * =============================
+ *
+ * Maps a 24x33 video frame array to the 647 physical LEDs using the coordinate
+ * mapping arrays. Each video pixel contains:
+ * - High bit (bit 7): Color selection (0=color0, 1=color1)
+ * - Lower 7 bits: Brightness value (0-127)
+ *
+ * @param video Pointer to the video frame data (792 bytes)
+ * @param videoWidth Width of video frame (24)
+ * @param videoHeight Height of video frame (33)
+ */
 void mapVideoToLeds(const byte *video, int videoWidth, int videoHeight)
 {
   for (int i = 0; i < NUM_LEDS; i++)
@@ -251,6 +322,15 @@ void mapVideoToLeds(const byte *video, int videoWidth, int videoHeight)
   }
 }
 
+/**
+ * Process Settings Packet
+ * ======================
+ *
+ * Updates the LED colors and brightness based on received settings packet.
+ * Packet format: [R0, G0, B0, R1, G1, B1, Brightness]
+ *
+ * @param settings Pointer to 7-byte settings packet
+ */
 void processSettings(const byte *settings)
 {
   // First 3 bytes: color0 (R, G, B)
@@ -261,6 +341,13 @@ void processSettings(const byte *settings)
   FastLED.setBrightness(settings[6]);
 }
 
+/**
+ * Initialize VL53L1X Distance Sensor
+ * ==================================
+ *
+ * Sets up the VL53L1X time-of-flight sensor with optimal settings for
+ * non-blocking operation. Configures I2C communication and sensor parameters.
+ */
 void setupVL53L1X()
 {
   Wire.begin(D4, D5);
@@ -276,6 +363,14 @@ void setupVL53L1X()
   vl53l1x_measurement_start_time = millis();
 }
 
+/**
+ * Non-blocking VL53L1X Distance Reading
+ * =====================================
+ *
+ * Checks if new distance data is available and reads it without blocking
+ * the main loop. Uses timeout protection to restart measurements if needed.
+ * Automatically sends distance data to serial when new readings are available.
+ */
 void readVL53L1X()
 {
   // Check if data is ready without blocking
@@ -306,11 +401,28 @@ void readVL53L1X()
   }
 }
 
+/**
+ * Send Distance Data to Serial
+ * ============================
+ *
+ * Transmits the current distance reading to the Python control script
+ * as plain text with newline termination.
+ */
 void sendVL53L1X()
 {
   Serial.println(vl53l1x_distance);
 }
 
+/**
+ * Arduino Setup Function
+ * =====================
+ *
+ * Initializes all hardware components and communication:
+ * - Serial communication at 1Mbps
+ * - VL53L1X distance sensor
+ * - FastLED library and LED strip
+ * - Default brightness and color correction
+ */
 void setup()
 {
   //  delay(3000); // 3 second delay for recovery
@@ -329,8 +441,21 @@ void setup()
   FastLED.setBrightness(DEFAULT_BRIGHTNESS);
 }
 
+/**
+ * Arduino Main Loop
+ * =================
+ *
+ * Main program loop that runs continuously:
+ * - Reads VL53L1X sensor data non-blocking
+ * - Processes incoming serial packets
+ * - Updates LED display with video frames
+ * - Applies color/brightness settings
+ *
+ * The loop is optimized for maximum responsiveness with minimal blocking operations.
+ */
 void loop()
 {
+  // Read sensor as frequently as possible without blocking
   readVL53L1X();
 
   if (receivePacket())

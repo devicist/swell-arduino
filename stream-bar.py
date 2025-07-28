@@ -1,9 +1,13 @@
 import serial
 import time
 import numpy as np
+import sys
+import select
+import tty
+import termios
 
 # Serial port settings
-SERIAL_PORT = '/dev/cu.usbmodem1101'  # Change to your Arduino port (e.g., COM3 on Windows, /dev/tty.usbserial-xxxx on Mac)
+SERIAL_PORT = '/dev/cu.usbmodem11201'  # Change to your Arduino port (e.g., COM3 on Windows, /dev/tty.usbserial-xxxx on Mac)
 BAUD_RATE = 1000000
 
 VIDEO_WIDTH = 24
@@ -39,6 +43,16 @@ def make_bar_frame(x):
     return frame
 
 
+def kbhit():
+    '''Return True if a keypress is waiting to be read in stdin (non-blocking).'''
+    dr, dw, de = select.select([sys.stdin], [], [], 0)
+    return dr != []
+
+def getch():
+    '''Read a single character from stdin.'''
+    return sys.stdin.read(1)
+
+
 def main():
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -47,10 +61,14 @@ def main():
         print(f"Failed to open serial port: {e}")
         return
 
+    # Set terminal to raw mode for non-blocking keypress
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
     try:
         x = 0
         dx = 1
-        loop_count = 0
         color0 = random_color()
         color1 = random_color()
         brightness = random_brightness()
@@ -68,20 +86,25 @@ def main():
             x += dx
             if x >= VIDEO_WIDTH - 1 or x <= 0:
                 dx *= -1
-                loop_count += 1
-                # After each full loop, send a new settings packet
-                color0 = random_color()
-                color1 = random_color()
-                brightness = random_brightness()
-                settings_payload = bytes(color0 + color1 + [brightness])
-                settings_checksum = sum(settings_payload) % 256
-                settings_packet = SETTINGS_HEADER + settings_payload + bytes([settings_checksum])
-                print(f"Sending settings packet: color0={color0}, color1={color1}, brightness={brightness}, checksum={settings_checksum:02X}")
-                ser.write(settings_packet)
+            # Check for spacebar press
+            if kbhit():
+                ch = getch()
+                if ch == ' ':
+                    color0 = random_color()
+                    color1 = random_color()
+                    brightness = random_brightness()
+                    settings_payload = bytes(color0 + color1 + [brightness])
+                    settings_checksum = sum(settings_payload) % 256
+                    settings_packet = SETTINGS_HEADER + settings_payload + bytes([settings_checksum])
+                    print(f"Sending settings packet: color0={color0}, color1={color1}, brightness={brightness}, checksum={settings_checksum:02X}")
+                    ser.write(settings_packet)
+                elif ch == '\x03':  # Ctrl-C
+                    break
             time.sleep(0.05)
     except KeyboardInterrupt:
         print("Exiting...")
     finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         ser.close()
         print("Serial port closed.")
 

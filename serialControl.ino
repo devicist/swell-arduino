@@ -108,9 +108,6 @@ CRGB leds[NUM_LEDS];
 CRGB color0 = CRGB::Blue;
 CRGB color1 = CRGB::White;
 
-#define FRAMES_PER_SECOND 120
-#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
-
 #define VIDEO_WIDTH 24
 #define VIDEO_HEIGHT 33
 #define VIDEO_PIXELS (VIDEO_WIDTH * VIDEO_HEIGHT)
@@ -208,13 +205,8 @@ bool receivePacket()
         if (calcChecksum == receivedChecksum)
         {
           receivedPacketType = PACKET_TYPE_VIDEO;
-          Serial.println("ACK");
           state = WAIT_HEADER1;
           return true;
-        }
-        else
-        {
-          Serial.println("NACK");
         }
       }
       else if (packetType == PACKET_TYPE_SETTINGS)
@@ -225,13 +217,8 @@ bool receivePacket()
         if (calcChecksum == receivedChecksum)
         {
           receivedPacketType = PACKET_TYPE_SETTINGS;
-          Serial.println("SETTINGS_ACK");
           state = WAIT_HEADER1;
           return true;
-        }
-        else
-        {
-          Serial.println("SETTINGS_NACK");
         }
       }
       state = WAIT_HEADER1;
@@ -242,33 +229,19 @@ bool receivePacket()
 }
 
 // Map a flat video array to the LED array using coordsX and coordsY
-// video: pointer to VIDEO_WIDTH * VIDEO_HEIGHT bytes (row-major order)
-// videoWidth, videoHeight: dimensions of the video frame
-// leds: your FastLED LED array
-// color0, color1: your two base colors
 void mapVideoToLeds(const byte *video, int videoWidth, int videoHeight)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
     int x = coordsX[i];
     int y = coordsY[i];
-    // Bounds check in case some LEDs are outside the video area
-    // if (x < videoWidth && y < videoHeight)
-    if (1)
-    {
-      int videoIndex = y * videoWidth + x;
-      byte val = video[videoIndex];
-      // byte val = video[i];
-      byte brightness = val & 0x7F; // lower 7 bits
-      bool colorSel = val & 0x80;   // high bit
-      CRGB base = colorSel ? color1 : color0;
-      leds[i] = base;
-      leds[i].nscale8_video(map(brightness, 0, 127, 0, 255));
-    }
-    else
-    {
-      leds[i] = CRGB::Black; // or some default
-    }
+    int videoIndex = y * videoWidth + x;
+    byte val = video[videoIndex];
+    byte brightness = val & 0x7F; // lower 7 bits
+    bool colorSel = val & 0x80;   // high bit
+    CRGB base = colorSel ? color1 : color0;
+    leds[i] = base;
+    leds[i].nscale8_video(map(brightness, 0, 127, 0, 255));
   }
 }
 

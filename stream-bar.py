@@ -5,6 +5,7 @@ import sys
 import select
 import tty
 import termios
+import threading
 
 # Serial port settings
 SERIAL_PORT = '/dev/cu.usbmodem11201'  # Change to your Arduino port (e.g., COM3 on Windows, /dev/tty.usbserial-xxxx on Mac)
@@ -15,6 +16,7 @@ VIDEO_HEIGHT = 33
 HEADER = bytes([0xFE, 0xFE, 0xFD])
 
 SETTINGS_HEADER = bytes([0xFE, 0xFE, 0xFC])
+VL53L1X_REQUEST_HEADER = bytes([0xFE, 0xFE, 0xFB])
 
 import random
 
@@ -43,6 +45,27 @@ def make_bar_frame(x):
     return frame
 
 
+def request_vl53l1x_data(ser):
+    """Request VL53L1X sensor data from Arduino and read the response."""
+    try:
+        # Send request for VL53L1X data
+        ser.write(VL53L1X_REQUEST_HEADER)
+        
+        # Wait a bit for Arduino to process and send response
+        time.sleep(0.01)
+        
+        # Read available data from serial
+        if ser.in_waiting > 0:
+            response = ser.readline().decode('utf-8').strip()
+            if response:
+                print(f"VL53L1X Distance: {response}")
+                return response
+        return None
+    except Exception as e:
+        print(f"Error reading VL53L1X data: {e}")
+        return None
+
+
 def kbhit():
     '''Return True if a keypress is waiting to be read in stdin (non-blocking).'''
     dr, dw, de = select.select([sys.stdin], [], [], 0)
@@ -51,6 +74,28 @@ def kbhit():
 def getch():
     '''Read a single character from stdin.'''
     return sys.stdin.read(1)
+
+
+def serial_monitor(ser):
+    """Continuously monitor serial port for incoming data and print it."""
+    while True:
+        try:
+            if ser.in_waiting > 0:
+                # Read all available data
+                data = ser.read(ser.in_waiting)
+                if data:
+                    # Try to decode as UTF-8 string first
+                    try:
+                        decoded = data.decode('utf-8', errors='replace')
+                        print(f"[Serial In] {decoded}", end='', flush=True)
+                    except UnicodeDecodeError:
+                        # If it's not valid UTF-8, print as hex
+                        hex_data = ' '.join(f'{b:02X}' for b in data)
+                        print(f"[Serial In] HEX: {hex_data}")
+            time.sleep(0.01)  # Small delay to prevent excessive CPU usage
+        except Exception as e:
+            print(f"Error in serial monitor: {e}")
+            break
 
 
 def main():
@@ -66,6 +111,11 @@ def main():
     old_settings = termios.tcgetattr(fd)
     tty.setcbreak(fd)
 
+    # Start serial monitor thread
+    monitor_thread = threading.Thread(target=serial_monitor, args=(ser,), daemon=True)
+    monitor_thread.start()
+    print("Serial monitor started - all incoming data will be printed.")
+
     try:
         x = 0
         dx = 1
@@ -78,11 +128,12 @@ def main():
             checksum = int(np.sum(frame_bytes) % 256)
             packet = HEADER + frame_bytes.tobytes() + bytes([checksum])
             frame_2d = frame.reshape((VIDEO_HEIGHT, VIDEO_WIDTH))
-            print("\nFrame array:")
-            for row in frame_2d:
-                print(' '.join(f'{val:02X}' for val in row))
-            print(f"\nPosition x={x}, checksum: {checksum:02X}, total bytes: {len(packet)}")
+            # print("\nFrame array:")
+            # for row in frame_2d:
+            #     print(' '.join(f'{val:02X}' for val in row))
+            # print(f"\nPosition x={x}, checksum: {checksum:02X}, total bytes: {len(packet)}")
             ser.write(packet)
+            
             x += dx
             if x >= VIDEO_WIDTH - 1 or x <= 0:
                 dx *= -1

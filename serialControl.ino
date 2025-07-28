@@ -15,6 +15,7 @@
 */
 
 #include <FastLED.h> // https://github.com/FastLED/FastLED
+#include <Melopero_VL53L1X.h>
 
 FASTLED_USING_NAMESPACE
 
@@ -115,6 +116,7 @@ CRGB color1 = CRGB::White;
 #define HEADER_2 0xFE
 #define FRAME_TYPE 0xFD
 #define SETTINGS_TYPE 0xFC
+#define READ_VL53L1X_TYPE 0xFB
 #define FRAME_SIZE (3 + VIDEO_PIXELS + 1) // header + payload + checksum
 #define SETTINGS_PAYLOAD_SIZE 7
 #define SETTINGS_PACKET_SIZE (3 + SETTINGS_PAYLOAD_SIZE + 1) // header + payload + checksum
@@ -123,10 +125,16 @@ CRGB color1 = CRGB::White;
 #define PACKET_TYPE_NONE 0
 #define PACKET_TYPE_VIDEO 1
 #define PACKET_TYPE_SETTINGS 2
+#define PACKET_TYPE_READ_VL53L1X 3
 
 volatile byte receivedPacketType = PACKET_TYPE_NONE;
 static byte videoFrame[VIDEO_PIXELS];
 static byte settingsPacket[SETTINGS_PAYLOAD_SIZE];
+
+Melopero_VL53L1X sensor;
+int vl53l1x_distance = 0;
+bool vl53l1x_measurement_started = false;
+unsigned long vl53l1x_measurement_start_time = 0;
 
 bool receivePacket()
 {
@@ -172,6 +180,13 @@ bool receivePacket()
       {
         packetType = PACKET_TYPE_SETTINGS;
         expectedPayloadSize = SETTINGS_PAYLOAD_SIZE;
+        payloadIndex = 0;
+        state = READ_PAYLOAD;
+      }
+      else if (b == READ_VL53L1X_TYPE)
+      {
+        packetType = PACKET_TYPE_READ_VL53L1X;
+        expectedPayloadSize = 0;
         payloadIndex = 0;
         state = READ_PAYLOAD;
       }
@@ -255,12 +270,64 @@ void processSettings(const byte *settings)
   FastLED.setBrightness(settings[6]);
 }
 
+void setupVL53L1X()
+{
+  Wire.begin(D4, D5);
+  sensor.initI2C(0x29, Wire);
+  sensor.initSensor();
+  sensor.setDistanceMode(VL53L1_DISTANCEMODE_LONG);
+  // sensor.setMeasurementTimingBudgetMicroSeconds(66000);
+  // sensor.setInterMeasurementPeriodMilliSeconds(75);
+  sensor.setMeasurementTimingBudgetMicroSeconds(140000);
+  sensor.setInterMeasurementPeriodMilliSeconds(150);
+  sensor.clearInterruptAndStartMeasurement();
+  vl53l1x_measurement_started = true;
+  vl53l1x_measurement_start_time = millis();
+}
+
+void readVL53L1X()
+{
+  // Check if data is ready without blocking
+  if (sensor.getMeasurementDataReady() == VL53L1_ERROR_NONE && sensor.dataReady)
+  {
+    // Data is ready, get the measurement
+    if (sensor.getRangingMeasurementData() == VL53L1_ERROR_NONE)
+    {
+      vl53l1x_distance = sensor.measurementData.RangeMilliMeter;
+      // Send the data immediately when we have a new reading
+      sendVL53L1X();
+    }
+
+    // Start next measurement immediately
+    sensor.clearInterruptAndStartMeasurement();
+    vl53l1x_measurement_started = true;
+    vl53l1x_measurement_start_time = millis();
+  }
+  else
+  {
+    // If no data ready, check if we should restart measurement (timeout protection)
+    if (vl53l1x_measurement_started && (millis() - vl53l1x_measurement_start_time > 200))
+    {
+      // Timeout - restart measurement
+      sensor.clearInterruptAndStartMeasurement();
+      vl53l1x_measurement_start_time = millis();
+    }
+  }
+}
+
+void sendVL53L1X()
+{
+  Serial.println(vl53l1x_distance);
+}
+
 void setup()
 {
   //  delay(3000); // 3 second delay for recovery
 
   Serial.begin(1000000);
   Serial.setRxBufferSize(1024);
+
+  setupVL53L1X();
 
   // tell FastLED about the LED strip configuration
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS).setRgbw(RgbwDefault());
@@ -273,6 +340,9 @@ void setup()
 
 void loop()
 {
+  // Read sensor as frequently as possible without blocking
+  readVL53L1X();
+
   if (receivePacket())
   {
     if (receivedPacketType == PACKET_TYPE_VIDEO)

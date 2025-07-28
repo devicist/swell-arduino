@@ -116,7 +116,6 @@ CRGB color1 = CRGB::White;
 #define HEADER_2 0xFE
 #define FRAME_TYPE 0xFD
 #define SETTINGS_TYPE 0xFC
-#define READ_VL53L1X_TYPE 0xFB
 #define FRAME_SIZE (3 + VIDEO_PIXELS + 1) // header + payload + checksum
 #define SETTINGS_PAYLOAD_SIZE 7
 #define SETTINGS_PACKET_SIZE (3 + SETTINGS_PAYLOAD_SIZE + 1) // header + payload + checksum
@@ -125,7 +124,6 @@ CRGB color1 = CRGB::White;
 #define PACKET_TYPE_NONE 0
 #define PACKET_TYPE_VIDEO 1
 #define PACKET_TYPE_SETTINGS 2
-#define PACKET_TYPE_READ_VL53L1X 3
 
 volatile byte receivedPacketType = PACKET_TYPE_NONE;
 static byte videoFrame[VIDEO_PIXELS];
@@ -180,13 +178,6 @@ bool receivePacket()
       {
         packetType = PACKET_TYPE_SETTINGS;
         expectedPayloadSize = SETTINGS_PAYLOAD_SIZE;
-        payloadIndex = 0;
-        state = READ_PAYLOAD;
-      }
-      else if (b == READ_VL53L1X_TYPE)
-      {
-        packetType = PACKET_TYPE_READ_VL53L1X;
-        expectedPayloadSize = 0;
         payloadIndex = 0;
         state = READ_PAYLOAD;
       }
@@ -340,7 +331,6 @@ void setup()
 
 void loop()
 {
-  // Read sensor as frequently as possible without blocking
   readVL53L1X();
 
   if (receivePacket())

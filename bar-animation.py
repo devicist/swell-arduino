@@ -16,7 +16,6 @@ VIDEO_HEIGHT = 33
 HEADER = bytes([0xFE, 0xFE, 0xFD])
 
 SETTINGS_HEADER = bytes([0xFE, 0xFE, 0xFC])
-VL53L1X_REQUEST_HEADER = bytes([0xFE, 0xFE, 0xFB])
 
 import random
 
@@ -43,28 +42,6 @@ def make_bar_frame(x):
     if 0 <= x < VIDEO_WIDTH:
         frame[:, x] = 0x80 | 0x7F  # high bit 1, lower 7 bits full brightness
     return frame
-
-
-def request_vl53l1x_data(ser):
-    """Request VL53L1X sensor data from Arduino and read the response."""
-    try:
-        # Send request for VL53L1X data
-        ser.write(VL53L1X_REQUEST_HEADER)
-        
-        # Wait a bit for Arduino to process and send response
-        time.sleep(0.01)
-        
-        # Read available data from serial
-        if ser.in_waiting > 0:
-            response = ser.readline().decode('utf-8').strip()
-            if response:
-                print(f"VL53L1X Distance: {response}")
-                return response
-        return None
-    except Exception as e:
-        print(f"Error reading VL53L1X data: {e}")
-        return None
-
 
 def kbhit():
     '''Return True if a keypress is waiting to be read in stdin (non-blocking).'''
